@@ -1,246 +1,182 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 from clustering import load_and_clean_data, scale_features, perform_kmeans
 import seaborn as sns
 import matplotlib.pyplot as plt
-import sys
-import io
+import plotly.express as px
+import plotly.graph_objects as go
 
-# Konfigurasi halaman Streamlit
-st.set_page_config(page_title="Clustering Ekonomi Provinsi", layout="wide")
+# ===== KONFIGURASI HALAMAN =====
+st.set_page_config(
+    page_title="Clustering Ekonomi Provinsi Indonesia",
+    page_icon="🏛️",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-# === JUDUL APLIKASI ===
-st.title("📊 Clustering Provinsi di Indonesia Berdasarkan Indikator Ekonomi")
-st.write("Aplikasi ini mengelompokkan provinsi berdasarkan PDRB per kapita, IPM, tingkat pengangguran, dan kemiskinan.")
+# ===== CUSTOM CSS =====
+st.markdown("""
+<style>
+body {
+    font-family: 'Segoe UI', sans-serif;
+    color: #f0f2f6;
+}
+.main-header {
+    background: linear-gradient(90deg, #00416A, #E4E5E6);
+    padding: 2rem;
+    border-radius: 12px;
+    margin-bottom: 2rem;
+    text-align: center;
+    color: white;
+    box-shadow: 0 4px 10px rgba(0,0,0,0.2);
+}
+.metric-container {
+    background: #1c1c1c;
+    padding: 1rem;
+    border-radius: 10px;
+    border-left: 5px solid #4CAF50;
+    margin: 1rem 0;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+    color: #fff;
+}
+.cluster-info {
+    background: #2b2b2b;
+    padding: 1rem;
+    border-radius: 10px;
+    border: 1px solid #444;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+    margin: 1rem 0;
+    color: #f0f2f6;
+}
+.success-box {
+    background: #1e4620;
+    color: #b2fab4;
+    border-left: 5px solid #2e7d32;
+}
+.warning-box {
+    background: #4e3c1f;
+    color: #ffe082;
+    border-left: 5px solid #ffa000;
+}
+.error-box {
+    background: #5f2120;
+    color: #ef9a9a;
+    border-left: 5px solid #e53935;
+}
+.stTabs [role="tablist"] > div[aria-selected="true"] {
+    border-bottom: 3px solid #29b6f6;
+    color: #29b6f6;
+    font-weight: 600;
+}
+</style>
+""", unsafe_allow_html=True)
 
-# === STEP 1: Muat dan Tampilkan Data Awal ===
-st.header("1. Dataset Awal")
+# ===== FUNGSI =====
+@st.cache_data
+def load_data():
+    return load_and_clean_data()
 
-# Capture debug output
-debug_output = io.StringIO()
-sys.stdout = debug_output
+def format_currency(value):
+    return f"Rp {value:,.0f}"
 
-with st.spinner('Memuat data dari `data/final_dataset.csv`...'):
-    try:
-        df = load_and_clean_data()
-        
-        # Restore stdout
-        sys.stdout = sys.__stdout__
-        
-        # Show debug info
-        debug_info = debug_output.getvalue()
-        if debug_info:
-            with st.expander("🔍 Debug Info - Klik untuk melihat detail pemrosesan"):
-                st.code(debug_info)
-        
-        if df is None or len(df) == 0:
-            st.error("❌ Gagal memuat data atau data kosong setelah pembersihan.")
-            st.write("**Kemungkinan masalah:**")
-            st.write("1. File CSV tidak ditemukan")
-            st.write("2. Format data tidak sesuai")
-            st.write("3. Semua data tidak valid/kosong")
-            st.stop()
-        
-        st.dataframe(df, use_container_width=True)
-        st.success(f"✅ Data berhasil dimuat dan dibersihkan. Terdapat **{len(df)}** provinsi yang valid untuk dianalisis.")
-        
-        # Tampilkan informasi statistik dasar
-        st.subheader("📊 Statistik Deskriptif")
-        numeric_cols = ['PDRB_per_kapita', 'Tingkat_Pengangguran', 'IPM', 'Kemiskinan']
-        
-        # Format statistik untuk tampilan yang lebih baik
-        stats_df = df[numeric_cols].describe()
-        
-        # Format PDRB sebagai mata uang
-        if 'PDRB_per_kapita' in stats_df.columns:
-            pdrb_stats = stats_df['PDRB_per_kapita'].copy()
-            stats_df['PDRB_per_kapita'] = pdrb_stats.apply(lambda x: f"Rp {x:,.0f}")
-        
-        st.dataframe(stats_df, use_container_width=True)
-        
-    except FileNotFoundError:
-        sys.stdout = sys.__stdout__
-        st.error("❌ Error: File `data/final_dataset.csv` tidak ditemukan.")
-        st.write("**Solusi:**")
-        st.write("1. Pastikan file ada di dalam folder `data/`")
-        st.write("2. Pastikan nama file adalah `final_dataset.csv`")
-        st.write("3. Periksa struktur folder proyek")
-        st.stop()
-    except Exception as e:
-        sys.stdout = sys.__stdout__
-        st.error(f"❌ Terjadi error saat memuat data: {e}")
-        st.write("**Debug info:**")
-        st.code(debug_output.getvalue())
-        st.stop()
+def create_cluster_interpretation(cluster_data, df_mean):
+    pdrb_high = cluster_data['PDRB_per_kapita'] > df_mean['PDRB_per_kapita']
+    ipm_high = cluster_data['IPM'] > df_mean['IPM']
+    unemployment_low = cluster_data['Tingkat_Pengangguran'] < df_mean['Tingkat_Pengangguran']
+    poverty_low = cluster_data['Kemiskinan'] < df_mean['Kemiskinan']
 
-# === STEP 2: Proses Clustering ===
-st.header("2. Hasil Clustering dengan K-Means")
-st.write("Pilih jumlah cluster dan jalankan algoritma K-Means.")
+    if pdrb_high and ipm_high and unemployment_low and poverty_low:
+        return "🟢 Provinsi Maju", "success", "PDRB tinggi, IPM tinggi, pengangguran & kemiskinan rendah"
+    elif pdrb_high and ipm_high:
+        return "🟡 Provinsi Berkembang Maju", "warning", "PDRB dan IPM tinggi, masih ada tantangan sosial"
+    elif ipm_high:
+        return "🔵 Provinsi Berkembang", "info", "IPM baik, perlu peningkatan ekonomi"
+    else:
+        return "🔴 Provinsi Tertinggal", "error", "Perlu perhatian khusus di semua aspek"
 
-# Pilihan jumlah cluster
-k = st.slider("Pilih Jumlah Cluster (k):", min_value=2, max_value=min(5, len(df)), value=3)
+def create_plot(df, x, y, title):
+    fig = px.scatter(
+        df, x=x, y=y, color="Cluster",
+        hover_data=["Provinsi", "PDRB_per_kapita", "IPM", "Tingkat_Pengangguran", "Kemiskinan"],
+        title=title, color_discrete_sequence=px.colors.qualitative.Set2
+    )
+    fig.update_layout(template="plotly_dark", height=500)
+    return fig
 
-# Capture debug output for clustering
-debug_output_clustering = io.StringIO()
-sys.stdout = debug_output_clustering
+# ===== HEADER =====
+st.markdown("""
+<div class="main-header">
+    <h1>🏛️ Clustering Provinsi Indonesia</h1>
+    <h3>Analisis Berdasarkan Indikator Ekonomi</h3>
+</div>
+""", unsafe_allow_html=True)
 
-try:
-    # Scaling dan clustering
-    X_scaled, features = scale_features(df)
-    clusters = perform_kmeans(X_scaled, k=k)
-    
-    # Restore stdout
-    sys.stdout = sys.__stdout__
-    
-    # Show clustering debug info
-    clustering_debug = debug_output_clustering.getvalue()
-    if clustering_debug:
-        with st.expander("🔍 Debug Info Clustering"):
-            st.code(clustering_debug)
-    
-    # Tambahkan hasil cluster ke DataFrame utama
-    df['Cluster'] = clusters
-    
-    # Tampilkan hasil dalam tabel yang ringkas
-    st.write("📋 Hasil penetapan cluster untuk setiap provinsi:")
-    result_df = df[['Provinsi', 'Cluster']].copy()
-    result_df['Cluster'] = result_df['Cluster'].apply(lambda x: f"Cluster {x}")
-    st.dataframe(result_df, use_container_width=True, height=300)
-    
-    # Tampilkan distribusi cluster
-    cluster_counts = df['Cluster'].value_counts().sort_index()
-    st.write("📊 Distribusi Cluster:")
-    col1, col2, col3 = st.columns(3)
-    for i, (cluster, count) in enumerate(cluster_counts.items()):
-        with [col1, col2, col3][i % 3]:
-            st.metric(f"Cluster {cluster}", f"{count} provinsi")
-    
-except Exception as e:
-    sys.stdout = sys.__stdout__
-    st.error(f"❌ Error dalam proses clustering: {e}")
-    st.write("**Debug info:**")
-    st.code(debug_output_clustering.getvalue())
+# ===== SIDEBAR =====
+st.sidebar.header("⚙️ Pengaturan Clustering")
+k = st.sidebar.slider("Jumlah Cluster", 2, 6, 3)
+chart_type = st.sidebar.selectbox("Jenis Visualisasi", ["Plotly Interaktif", "Matplotlib Statik"])
+
+# ===== DATA =====
+with st.spinner("🔄 Memuat data..."):
+    df = load_data()
+if df is None or df.empty:
+    st.error("❌ Gagal memuat data.")
     st.stop()
 
-# === STEP 3: Visualisasi Hasil Clustering ===
-st.header("3. 📈 Visualisasi Cluster")
-st.write("Visualisasi sebaran provinsi berdasarkan indikator yang dipilih.")
+X_scaled, features = scale_features(df)
+df['Cluster'] = perform_kmeans(X_scaled, k)
 
-# Set style untuk plot
-plt.style.use('default')
-sns.set_palette("viridis")
+# ===== TABS =====
+tab1, tab2, tab3, tab4 = st.tabs(["📊 Data", "🔍 Cluster", "📈 Visualisasi", "💡 Interpretasi"])
 
-col1, col2 = st.columns(2)
+with tab1:
+    st.subheader("📊 Dataset dan Statistik")
+    st.dataframe(df.drop("Cluster", axis=1), use_container_width=True)
 
-with col1:
-    # Scatter Plot: PDRB vs IPM
-    fig1, ax1 = plt.subplots(figsize=(10, 8))
-    scatter = sns.scatterplot(data=df, x='PDRB_per_kapita', y='IPM', hue='Cluster', 
-                   palette='viridis', s=120, ax=ax1, legend='full')
-    ax1.set_title("Cluster: PDRB per Kapita vs IPM", fontsize=16, fontweight='bold')
-    ax1.set_xlabel("PDRB per Kapita (Rupiah)", fontsize=12)
-    ax1.set_ylabel("Indeks Pembangunan Manusia (IPM)", fontsize=12)
-    
-    # Format x-axis untuk nilai PDRB
-    ax1.ticklabel_format(style='plain', axis='x')
-    plt.setp(ax1.get_xticklabels(), rotation=45)
-    
-    # Tambahkan grid
-    ax1.grid(True, alpha=0.3)
-    
-    st.pyplot(fig1)
-
-with col2:
-    # Scatter Plot: Kemiskinan vs Pengangguran
-    fig2, ax2 = plt.subplots(figsize=(10, 8))
-    sns.scatterplot(data=df, x='Kemiskinan', y='Tingkat_Pengangguran', hue='Cluster', 
-                   palette='viridis', s=120, ax=ax2, legend='full')
-    ax2.set_title("Cluster: Kemiskinan vs Pengangguran", fontsize=16, fontweight='bold')
-    ax2.set_xlabel("Tingkat Kemiskinan (%)", fontsize=12)
-    ax2.set_ylabel("Tingkat Pengangguran (%)", fontsize=12)
-    
-    # Tambahkan grid
-    ax2.grid(True, alpha=0.3)
-    
-    st.pyplot(fig2)
-
-# === STEP 4: Analisis dan Ringkasan Karakteristik Cluster ===
-st.header("4. 📊 Ringkasan Karakteristik Setiap Cluster")
-st.write("Tabel di bawah ini menunjukkan nilai rata-rata dari setiap indikator untuk masing-masing cluster.")
-
-try:
-    # Gunakan groupby untuk ringkasan
-    cluster_summary = df.groupby('Cluster')[features].mean()
-    
-    # Format angka untuk tampilan yang lebih baik
-    cluster_summary_formatted = cluster_summary.copy()
-    cluster_summary_formatted['PDRB_per_kapita'] = cluster_summary_formatted['PDRB_per_kapita'].apply(
-        lambda x: f"Rp {x:,.0f}"
-    )
-    for col in ['Tingkat_Pengangguran', 'IPM', 'Kemiskinan']:
-        if col in cluster_summary_formatted.columns:
-            cluster_summary_formatted[col] = cluster_summary_formatted[col].apply(
-                lambda x: f"{x:.2f}%"
-            )
-    
-    st.dataframe(cluster_summary_formatted, use_container_width=True)
-    
-    # Tampilkan anggota setiap cluster
-    st.write("🏛️ **Daftar provinsi di setiap cluster:**")
+with tab2:
+    st.subheader("🔍 Distribusi Cluster")
     for i in range(k):
-        with st.expander(f"**📍 Cluster {i} - Detail**"):
-            provinces = df[df['Cluster'] == i]['Provinsi'].tolist()
-            st.write(f"**Jumlah Provinsi:** {len(provinces)}")
-            st.write(f"**Provinsi:** {', '.join(provinces)}")
-            
-            # Tampilkan karakteristik cluster
-            cluster_data = df[df['Cluster'] == i][features].mean()
-            st.write("**📈 Karakteristik Rata-rata:**")
-            st.write(f"- 💰 PDRB per Kapita: Rp {cluster_data['PDRB_per_kapita']:,.0f}")
-            st.write(f"- 🎓 IPM: {cluster_data['IPM']:.2f}")
-            st.write(f"- 👥 Tingkat Pengangguran: {cluster_data['Tingkat_Pengangguran']:.2f}%")
-            st.write(f"- 🏠 Kemiskinan: {cluster_data['Kemiskinan']:.2f}%")
-            
-            # Interpretasi cluster
-            if cluster_data['PDRB_per_kapita'] > df['PDRB_per_kapita'].mean():
-                if cluster_data['IPM'] > df['IPM'].mean():
-                    st.success("✅ **Profil:** Provinsi Maju (PDRB dan IPM tinggi)")
-                else:
-                    st.warning("⚠️ **Profil:** Provinsi Kaya tapi IPM rendah")
-            else:
-                if cluster_data['IPM'] < df['IPM'].mean():
-                    st.error("❌ **Profil:** Provinsi Tertinggal (perlu perhatian khusus)")
-                else:
-                    st.info("ℹ️ **Profil:** Provinsi Berkembang")
-            
-except Exception as e:
-    st.error(f"❌ Error dalam analisis cluster: {e}")
+        prov = df[df['Cluster'] == i]['Provinsi'].tolist()
+        st.markdown(f"### Cluster {i} ({len(prov)} Provinsi)")
+        st.markdown("<div class='cluster-info'><ul>" + "".join([f"<li>{p}</li>" for p in prov]) + "</ul></div>", unsafe_allow_html=True)
 
-# === STEP 5: Interpretasi Hasil ===
-st.header("5. 🎯 Interpretasi Hasil & Rekomendasi")
-st.write("""
-**📋 Interpretasi Cluster:**
+with tab3:
+    st.subheader("📈 Visualisasi Data")
+    if chart_type == "Plotly Interaktif":
+        col1, col2 = st.columns(2)
+        with col1:
+            st.plotly_chart(create_plot(df, "PDRB_per_kapita", "IPM", "PDRB vs IPM"), use_container_width=True)
+        with col2:
+            st.plotly_chart(create_plot(df, "Kemiskinan", "Tingkat_Pengangguran", "Kemiskinan vs Pengangguran"), use_container_width=True)
+        st.plotly_chart(px.scatter_3d(df, x='PDRB_per_kapita', y='IPM', z='Tingkat_Pengangguran', color='Cluster', hover_name='Provinsi', title='📊 3D Visualisasi Cluster'), use_container_width=True)
+    else:
+        fig, ax = plt.subplots()
+        sns.scatterplot(data=df, x="PDRB_per_kapita", y="IPM", hue="Cluster", palette="viridis", s=100, ax=ax)
+        st.pyplot(fig)
 
-**🟢 Cluster Maju:** Provinsi dengan PDRB tinggi dan IPM tinggi
-- Karakteristik: Ekonomi kuat, pembangunan manusia baik
-- Strategi: Pertahankan momentum, fokus pada inovasi
+with tab4:
+    st.subheader("💡 Interpretasi & Strategi")
+    cluster_summary = df.groupby("Cluster")[features].mean()
+    df_mean = df[features].mean()
 
-**🟡 Cluster Berkembang:** Provinsi dengan karakteristik menengah
-- Karakteristik: Dalam transisi pembangunan
-- Strategi: Percepatan pembangunan infrastruktur dan SDM
+    for i in range(k):
+        cluster_data = cluster_summary.loc[i]
+        prov = df[df['Cluster'] == i]['Provinsi'].tolist()
+        status, box, desc = create_cluster_interpretation(cluster_data, df_mean)
+        with st.expander(f"{status} - Cluster {i} ({len(prov)} Provinsi)"):
+            st.metric("💰 PDRB per Kapita", format_currency(cluster_data['PDRB_per_kapita']))
+            st.metric("🎓 IPM", f"{cluster_data['IPM']:.2f}")
+            st.metric("👥 Pengangguran", f"{cluster_data['Tingkat_Pengangguran']:.2f}%")
+            st.metric("🏠 Kemiskinan", f"{cluster_data['Kemiskinan']:.2f}%")
 
-**🔴 Cluster Tertinggal:** Provinsi dengan PDRB rendah dan IPM rendah
-- Karakteristik: Memerlukan perhatian khusus
-- Strategi: Program khusus pengentasan kemiskinan dan peningkatan pendidikan
+            box_class = "success-box" if box == "success" else "warning-box" if box == "warning" else "error-box"
+            st.markdown(f"<div class='{box_class}'><strong>{desc}</strong><br><em>Strategi: Tindak lanjut sesuai kondisi masing-masing cluster.</em></div>", unsafe_allow_html=True)
 
-**🎯 Manfaat Analisis:**
-- 📊 Perencanaan alokasi anggaran yang lebih tepat sasaran
-- 🎯 Penentuan prioritas program pembangunan
-- 🗺️ Strategi pengembangan ekonomi regional yang berbeda per cluster
-- 📈 Monitoring dan evaluasi kemajuan pembangunan
-""")
-
-# Footer
-st.markdown("---")
-st.markdown("*Aplikasi Clustering Provinsi Indonesia - Analisis Indikator Ekonomi*")
-st.markdown("*Data diproses menggunakan algoritma K-Means*")
+# ===== FOOTER =====
+st.markdown("""
+---
+<div style='text-align:center; color: gray;'>
+    Aplikasi oleh Tim Analitik | 2025
+</div>
+""", unsafe_allow_html=True)
